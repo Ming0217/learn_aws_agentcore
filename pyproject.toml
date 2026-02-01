@@ -1,0 +1,17 @@
+[project]
+name = "learn-aws-agentcore"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "strands-agents>=1.24.0",
+    "strands-agents-tools",
+    "boto3>=1.42.3",
+    "botocore>=1.42.3",
+    "bedrock-agentcore==1.1.1",
+    "bedrock-agentcore-starter-toolkit==0.2.3",
+    "aws-opentelemetry-distro==0.14.0",
+    "ddgs",
+    "pyyaml"
+]
