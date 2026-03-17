@@ -1,16 +1,56 @@
-# Import libraries
+"""
+main.py - Customer Support Agent
+=================================
+This is the core runtime for the AI-powered customer support agent.
+It defines the tools the agent can use and wires everything together
+using the Strands Agents framework backed by AWS Bedrock.
+
+ARCHITECTURE OVERVIEW:
+  User query → Agent (LLM) → selects tool(s) → tool returns data → Agent formats response
+
+STRANDS AGENTS FRAMEWORK:
+  Strands is an AWS open-source framework for building LLM agents.
+  It handles the tool-calling loop automatically:
+    1. Sends user message + tool definitions to the LLM
+    2. LLM decides which tool(s) to call and with what arguments
+    3. Strands executes the tool and sends results back to the LLM
+    4. LLM formulates the final response
+  This loop is called the "agentic loop" or "ReAct" (Reason + Act) pattern.
+
+SEPARATION OF CONCERNS:
+  - main.py  → agent runtime (tools, model, system prompt)
+  - kb_setup.py → one-time KB setup (S3 download + Bedrock ingestion)
+"""
+
 import boto3
 from boto3.session import Session
-
 from ddgs.exceptions import DDGSException, RatelimitException
 from ddgs import DDGS
-
 from strands.tools import tool
+from strands.models import BedrockModel
+from strands import Agent
+from strands_tools import retrieve
 
-# Get boto session
+# ---------------------------------------------------------------------------
+# AWS Session Setup
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: Using boto3.Session() (rather than individual client calls)
+# is best practice — it respects environment variables, ~/.aws/credentials,
+# and IAM role credentials automatically. Always resolve region at runtime.
+# ---------------------------------------------------------------------------
 boto_session = Session()
 region = boto_session.region_name
 
+
+# ---------------------------------------------------------------------------
+# TOOL 1: get_return_policy
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: The @tool decorator from Strands converts a regular Python
+# function into a tool the LLM can call. Strands reads the function's
+# docstring and type hints to generate the tool schema (JSON) that gets
+# sent to the LLM, so clear docstrings are important — they guide the LLM
+# on WHEN and HOW to use each tool.
+# ---------------------------------------------------------------------------
 @tool
 def get_return_policy(product_category: str) -> str:
     """
@@ -22,7 +62,9 @@ def get_return_policy(product_category: str) -> str:
     Returns:
         Formatted return policy details including timeframes and conditions
     """
-    # Mock return policy database - in real implementation, this would query policy database
+    # Mock return policy database.
+    # LEARNING NOTE: In production, this would call an internal API or query
+    # a database (e.g., DynamoDB or RDS). Mocking here keeps the lab self-contained.
     return_policies = {
         "smartphones": {
             "window": "30 days",
@@ -50,7 +92,7 @@ def get_return_policy(product_category: str) -> str:
         },
     }
 
-    # Default policy for unlisted categories
+    # Fallback for categories not in the mock database
     default_policy = {
         "window": "30 days",
         "condition": "Original condition with all included components",
@@ -71,9 +113,16 @@ def get_return_policy(product_category: str) -> str:
         f"• Warranty: {policy['warranty']}"
     )
 
-
 print("✅ Return policy tool ready")
 
+
+# ---------------------------------------------------------------------------
+# TOOL 2: get_product_info
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: This is another mock tool. Notice the pattern — each tool
+# has a single, focused responsibility. This makes it easier for the LLM
+# to pick the right tool and for you to test/debug each one independently.
+# ---------------------------------------------------------------------------
 @tool
 def get_product_info(product_type: str) -> str:
     """
@@ -84,7 +133,7 @@ def get_product_info(product_type: str) -> str:
     Returns:
         Formatted product information including warranty, features, and policies
     """
-    # Mock product catalog - in real implementation, this would query a product database
+    # Mock product catalog
     products = {
         "laptops": {
             "warranty": "1-year manufacturer warranty + optional extended coverage",
@@ -115,6 +164,7 @@ def get_product_info(product_type: str) -> str:
             "support": "Color calibration and technical support",
         },
     }
+
     product = products.get(product_type.lower())
     if not product:
         return f"Technical specifications for {product_type} not available. Please contact our technical support team for detailed product information and compatibility requirements."
@@ -128,9 +178,23 @@ def get_product_info(product_type: str) -> str:
         f"• Support: {product['support']}"
     )
 
-
 print("✅ get_product_info tool ready")
 
+
+# ---------------------------------------------------------------------------
+# TOOL 3: web_search
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: This tool gives the agent access to live internet data via
+# DuckDuckGo (no API key required). This is useful when the agent needs
+# information that isn't in the KB or mock data — e.g., latest firmware
+# versions, recent product recalls, or current pricing.
+#
+# IMPORTANT: In production, be mindful of:
+#   - Rate limiting (handled below)
+#   - Data quality — web results are unverified, so the LLM should be
+#     instructed to treat them as supplementary, not authoritative
+#   - Cost/latency — web search adds latency to the agent response
+# ---------------------------------------------------------------------------
 @tool
 def web_search(keywords: str, region: str = "us-en", max_results: int = 5) -> str:
     """Search the web for updated information.
@@ -141,131 +205,77 @@ def web_search(keywords: str, region: str = "us-en", max_results: int = 5) -> st
         max_results (int | None): The maximum number of results to return.
     Returns:
         List of dictionaries with search results.
-
     """
     try:
         results = DDGS().text(keywords, region=region, max_results=max_results)
         return results if results else "No results found."
     except RatelimitException:
+        # LEARNING NOTE: Always handle rate limits gracefully — return a
+        # meaningful message so the agent can inform the user instead of crashing.
         return "Rate limit reached. Please try again later."
     except DDGSException as e:
         return f"Search error: {e}"
     except Exception as e:
         return f"Search error: {str(e)}"
 
-
 print("✅ Web search tool ready")
 
 
-# import os
-
-
-# def download_files():
-#     # Get account and region
-#     account_id = boto3.client("sts").get_caller_identity()["Account"]
-#     region = boto3.Session().region_name
-#     bucket_name = f"{account_id}-{region}-kb-data-bucket"
-
-#     # Create local folder
-#     os.makedirs("knowledge_base_data", exist_ok=True)
-
-#     # Download all files
-#     s3 = boto3.client("s3")
-#     objects = s3.list_objects_v2(Bucket=bucket_name)
-
-#     for obj in objects["Contents"]:
-#         file_name = obj["Key"]
-#         s3.download_file(bucket_name, file_name, f"knowledge_base_data/{file_name}")
-#         print(f"Downloaded: {file_name}")
-
-#     print("All files saved to: knowledge_base_data/")
-
-
-# # Run it
-# download_files()
-
-# import time
-
-# # Get parameters
-# ssm = boto3.client("ssm")
-# bedrock = boto3.client("bedrock-agent")
-# s3 = boto3.client("s3")
-
-# account_id = boto3.client("sts").get_caller_identity()["Account"]
-# region = boto3.Session().region_name
-
-# kb_id = ssm.get_parameter(Name=f"/{account_id}-{region}/kb/knowledge-base-id")[
-#     "Parameter"
-# ]["Value"]
-# ds_id = ssm.get_parameter(Name=f"/{account_id}-{region}/kb/data-source-id")[
-#     "Parameter"
-# ]["Value"]
-
-# # Get file names from S3 bucket
-# bucket_name = f"{account_id}-{region}-kb-data-bucket"
-# s3_objects = s3.list_objects_v2(Bucket=bucket_name)
-# file_names = [obj["Key"] for obj in s3_objects.get("Contents", [])]
-
-# # Start sync job
-# response = bedrock.start_ingestion_job(
-#     knowledgeBaseId=kb_id, dataSourceId=ds_id, description="Quick sync"
-# )
-
-# job_id = response["ingestionJob"]["ingestionJobId"]
-# print("Bedrock knowledge base sync job started, ingesting the data files from s3")
-
-# # Monitor until complete
-# while True:
-#     job = bedrock.get_ingestion_job(
-#         knowledgeBaseId=kb_id, dataSourceId=ds_id, ingestionJobId=job_id
-#     )["ingestionJob"]
-
-#     status = job["status"]
-
-#     if status in ["COMPLETE", "FAILED"]:
-#         break
-
-#     time.sleep(10)
-
-# # Print final result
-# if status == "COMPLETE":
-#     file_count = job.get("statistics", {}).get("numberOfDocumentsScanned", 0)
-#     files_list = ", ".join(file_names)
-#     print(
-#         f"Bedrock knowledge base sync job completed Successfully, ingested {file_count} files"
-#     )
-#     print(f"Files ingested: {files_list}")
-# else:
-#     print(f"Bedrock knowledge base sync job failed with status: {status}")
-
-
-from strands.models import BedrockModel
-from strands import Agent
-from strands_tools import retrieve
-
-
+# ---------------------------------------------------------------------------
+# TOOL 4: get_technical_support
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: This is the most sophisticated tool — it implements RAG
+# (Retrieval-Augmented Generation) by querying the Bedrock Knowledge Base.
+#
+# RAG PATTERN EXPLAINED:
+#   Instead of relying solely on the LLM's training data, RAG retrieves
+#   relevant passages from YOUR documents at query time and injects them
+#   into the LLM's context. This means:
+#     ✅ Answers are grounded in your actual product documentation
+#     ✅ No need to fine-tune the model when docs change — just re-sync the KB
+#     ✅ Reduces hallucinations for domain-specific questions
+#
+# HOW THIS TOOL WORKS:
+#   1. Looks up the KB ID from SSM Parameter Store (avoids hardcoding)
+#   2. Calls the Strands `retrieve` tool to query the Bedrock KB
+#   3. Bedrock converts the query to an embedding, finds similar doc chunks,
+#      and returns the most relevant passages
+#   4. Those passages are returned to the agent, which uses them to answer
+# ---------------------------------------------------------------------------
 @tool
 def get_technical_support(issue_description: str) -> str:
+    """
+    Retrieve technical support information from the Bedrock Knowledge Base.
+    Use this for troubleshooting, setup guides, maintenance tips, and detailed technical assistance.
+
+    Args:
+        issue_description: Description of the technical issue or question
+
+    Returns:
+        Relevant technical support content from the knowledge base
+    """
     try:
-        # Get KB ID from parameter store
         ssm = boto3.client("ssm")
         account_id = boto3.client("sts").get_caller_identity()["Account"]
         region = boto3.Session().region_name
 
-        kb_id = ssm.get_parameter(Name=f"/{account_id}-{region}/kb/knowledge-base-id")[
-            "Parameter"
-        ]["Value"]
+        # Fetch the KB ID from SSM — never hardcode resource IDs
+        kb_id = ssm.get_parameter(Name=f"/{account_id}-{region}/kb/knowledge-base-id")["Parameter"]["Value"]
         print(f"Successfully retrieved KB ID: {kb_id}")
 
-        # Use strands retrieve tool
+        # Build the tool_use payload for the Strands retrieve tool.
+        # LEARNING NOTE: The `retrieve` tool from strands_tools wraps the
+        # Bedrock RetrieveAndGenerate API. The `score` threshold (0.4) filters
+        # out low-relevance results — tune this based on your use case.
+        # Lower score = more results but potentially less relevant.
         tool_use = {
             "toolUseId": "tech_support_query",
             "input": {
                 "text": issue_description,
                 "knowledgeBaseId": kb_id,
                 "region": region,
-                "numberOfResults": 3,
-                "score": 0.4,
+                "numberOfResults": 3,   # Return top 3 most relevant passages
+                "score": 0.4,           # Minimum relevance score threshold
             },
         }
 
@@ -280,9 +290,22 @@ def get_technical_support(issue_description: str) -> str:
         print(f"Detailed error in get_technical_support: {str(e)}")
         return f"Unable to access technical support documentation. Error: {str(e)}"
 
-
 print("✅ Technical support tool ready")
 
+
+# ---------------------------------------------------------------------------
+# System Prompt
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: The system prompt is the agent's "personality and rulebook".
+# It tells the LLM:
+#   - What role it plays (customer support agent)
+#   - What tools are available and when to use each one
+#   - How to behave (tone, escalation paths)
+#
+# Good system prompts are specific about tool usage — vague prompts lead to
+# the LLM guessing which tool to use, causing incorrect or inconsistent behavior.
+# Notice how each tool is explicitly described with its use case.
+# ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are a helpful and professional customer support assistant for an electronics e-commerce company.
 Your role is to:
 - Provide accurate information using the tools available to you
@@ -294,33 +317,71 @@ Your role is to:
 You have access to the following tools:
 1. get_return_policy() - For warranty and return policy questions
 2. get_product_info() - To get information about a specific product
-3. web_search() - To access current technical documentation, or for updated information. 
+3. web_search() - To access current technical documentation, or for updated information
 4. get_technical_support() - For troubleshooting issues, setup guides, maintenance tips, and detailed technical assistance
-For any technical problems, setup questions, or maintenance concerns, always use the get_technical_support() tool as it contains our comprehensive technical documentation and step-by-step guides.
 
-Always use the appropriate tool to get accurate, up-to-date information rather than making assumptions about electronic products or specifications."""
+For any technical problems, setup questions, or maintenance concerns, always use the get_technical_support() tool
+as it contains our comprehensive technical documentation and step-by-step guides.
 
-# Initialize the Bedrock model (Anthropic Claude 3.7 Sonnet)
+Always use the appropriate tool to get accurate, up-to-date information rather than making assumptions about
+electronic products or specifications."""
+
+
+# ---------------------------------------------------------------------------
+# Model Initialization
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: BedrockModel wraps the Bedrock Converse API.
+# Key parameters:
+#   - model_id: The foundation model to use. Here we use Claude Haiku for
+#     speed and cost efficiency. For more complex reasoning, you'd use Sonnet.
+#   - temperature: Controls randomness. 0.0 = deterministic, 1.0 = creative.
+#     For customer support, 0.3 keeps responses consistent and factual.
+#   - region_name: Always pass explicitly to avoid region misconfiguration.
+# ---------------------------------------------------------------------------
 model = BedrockModel(
     model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    temperature=0.3,
+    temperature=0.3,    # Low temperature = more consistent, factual responses
     region_name=region,
 )
 
-# Create the customer support agent with all tools
+
+# ---------------------------------------------------------------------------
+# Agent Initialization
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: The Agent class is the orchestrator. It manages:
+#   - The agentic loop (send message → get tool call → execute → repeat)
+#   - Conversation memory (maintains context across turns in a session)
+#   - Tool registration (makes tools available to the LLM via JSON schema)
+#
+# The order of tools in the list doesn't affect behavior — the LLM picks
+# the right tool based on the docstrings and system prompt guidance.
+# ---------------------------------------------------------------------------
 agent = Agent(
     model=model,
     tools=[
-        get_product_info,  # Tool 1: Simple product information lookup
-        get_return_policy,  # Tool 2: Simple return policy lookup
-        web_search,  # Tool 3: Access the web for updated information
-        get_technical_support,  # Tool 4: Technical support & troubleshooting
+        get_product_info,       # Tool 1: Mock product specs lookup
+        get_return_policy,      # Tool 2: Mock return policy lookup
+        web_search,             # Tool 3: Live web search via DuckDuckGo
+        get_technical_support,  # Tool 4: RAG-based KB retrieval via Bedrock
     ],
     system_prompt=SYSTEM_PROMPT,
 )
 
-print("Customer Support Agent created successfully!")
+print("✅ Customer Support Agent created successfully!")
 
+
+# ---------------------------------------------------------------------------
+# Test Queries
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: These are simple end-to-end tests to verify the agent
+# is wired up correctly. In production, you'd replace this with an API
+# endpoint (e.g., FastAPI or Lambda) that accepts user messages and
+# returns agent responses.
+#
+# Notice the agent maintains conversation context across calls within
+# the same session — it "remembers" the iPhone was mentioned in query 1
+# when answering query 2.
+# ---------------------------------------------------------------------------
 response = agent("What's the return policy for my thinkpad X1 Carbon?")
 
 response = agent(
