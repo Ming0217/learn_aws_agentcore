@@ -1,6 +1,6 @@
 # AWS AgentCore Workshop — Learning Journal
 
-This repo documents my progress through the AWS AgentCore workshop labs.
+This repo documents my progress through the [AWS AgentCore workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/850fcd5c-fd1f-48d7-932c-ad9babede979/en-US) labs.
 Each lab section captures the objectives, what was built, and key takeaways.
 The code has been refactored from the original Jupyter notebooks into clean,
 production-oriented Python scripts.
@@ -9,14 +9,7 @@ production-oriented Python scripts.
 
 ## Lab 1 — Building a Strands Agent with Tools
 
-### Original AWS Workshop Objectives
-- How to create tools using the `@tool` decorator
-- How to initialize a Strands agent with model and tools
-- How to test your agent locally in a Jupyter notebook
-
-### What We Actually Built (lab_1_cleanup)
-
-Beyond the original lab, this version was refactored for production readiness:
+### What Was Built
 
 **`main.py` — The Agent Runtime**
 - Defined 4 tools using the `@tool` decorator from the Strands Agents framework:
