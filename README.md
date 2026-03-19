@@ -37,3 +37,33 @@ production-oriented Python scripts.
 ---
 
 *More labs coming soon...*
+
+---
+
+## Lab 2 — Persistent Memory with AgentCore Memory
+
+### What Was Built
+
+**`create_memories.py` — Memory Store Setup (one-time script)**
+- Creates a named `CustomerSupportMemory` store via `MemoryManager`
+- Configures two memory strategies:
+  - `UserPreference` — infers and stores customer preferences (e.g., brand loyalty, budget, use case)
+  - `Semantic` — extracts factual details from conversations (e.g., owns MacBook Pro, reported overheating)
+- Seeds the memory store with previous customer interactions so the agent has history to recall from day one
+- Saves the `memory_id` to SSM Parameter Store so `main.py` can reference it without hardcoding
+
+**`main.py` — Agent Runtime (updated)**
+- Fetches `memory_id` from SSM at startup — decouples setup from runtime
+- Configures `AgentCoreMemoryConfig` with:
+  - `session_id` (new UUID per run) for scoping short-term conversation context
+  - `actor_id` for namespacing memories per customer
+  - `retrieval_config` per namespace with `top_k` and `relevance_score` thresholds
+- Passes `AgentCoreMemorySessionManager` into the Strands `Agent` — this hooks into the agent lifecycle to automatically save and retrieve memories without manual API calls
+- Updated test queries specifically validate memory recall across sessions
+
+### Key Takeaways
+
+- AgentCore Memory has two layers: short-term (scoped to `session_id`, lost when session ends) and long-term (scoped to `actor_id`, persists across sessions). Personalization relies on long-term memory.
+- The `AgentCoreMemorySessionManager` is a "hook" — it intercepts the agent's turn lifecycle to inject retrieved memories before the LLM responds, and persist new interactions after. You don't call memory APIs manually.
+- Two memory strategy types serve different purposes: `UserPreference` captures inferred behavioral patterns, `Semantic` captures factual statements. Both are retrieved and injected as context automatically.
+- `relevance_score=0.2` is intentionally permissive — for customer support, it's better to over-retrieve and let the LLM filter than to miss relevant context with a high 

@@ -17,12 +17,26 @@ STRANDS AGENTS FRAMEWORK:
     4. LLM formulates the final response
   This loop is called the "agentic loop" or "ReAct" (Reason + Act) pattern.
 
+LAB 2 ADDITIONS — AgentCore Memory:
+  The agent now has persistent memory across sessions via AWS Bedrock AgentCore Memory.
+  This means the agent can recall past customer interactions, preferences, and issues
+  even when the process restarts — unlike in-memory conversation history which is lost
+  when the session ends.
+
+  Memory flow:
+    Customer message → Agent responds → AgentCoreMemorySessionManager auto-saves interaction
+    → On next session, relevant memories are retrieved and injected into the LLM context
+    → Agent personalizes response based on what it remembers about this customer
+
 SEPARATION OF CONCERNS:
-  - main.py  → agent runtime (tools, model, system prompt)
-  - kb_setup.py → one-time KB setup (S3 download + Bedrock ingestion)
+  - main.py          → agent runtime (tools, model, memory config, system prompt)
+  - kb_setup.py      → one-time KB setup (S3 download + Bedrock ingestion)
+  - create_memories.py → one-time memory setup (create memory store + seed history)
 """
 
 import boto3
+import uuid
+
 from boto3.session import Session
 from ddgs.exceptions import DDGSException, RatelimitException
 from ddgs import DDGS
@@ -30,6 +44,12 @@ from strands.tools import tool
 from strands.models import BedrockModel
 from strands import Agent
 from strands_tools import retrieve
+from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
+from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
+from lab_helpers.lab2_memory import ACTOR_ID
+# LEARNING NOTE: ACTOR_ID is the unique identifier for the customer whose memories
+# we're retrieving. In production this would come from your auth system (e.g., Cognito sub).
+# It's used to namespace memories so each customer's data is isolated from others.
 
 # ---------------------------------------------------------------------------
 # AWS Session Setup
@@ -40,6 +60,18 @@ from strands_tools import retrieve
 # ---------------------------------------------------------------------------
 boto_session = Session()
 region = boto_session.region_name
+
+# ---------------------------------------------------------------------------
+# Fetch shared resource IDs from SSM Parameter Store
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: memory_id was created by create_memories.py and saved to SSM.
+# Reading it here at startup decouples the two scripts — create_memories.py
+# only needs to run once (or when you want to reset memory), while main.py
+# can be restarted freely and will always pick up the correct memory_id.
+# This is the standard pattern for sharing resource IDs across scripts/services.
+# ---------------------------------------------------------------------------
+ssm = boto3.client("ssm")
+memory_id = ssm.get_parameter(Name="/app/customersupport/agentcore/memory_id")["Parameter"]["Value"]
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +359,43 @@ Always use the appropriate tool to get accurate, up-to-date information rather t
 electronic products or specifications."""
 
 
+session_id = uuid.uuid4()
+# LEARNING NOTE: A new session_id is generated on every run (uuid4 = random UUID).
+# This tells AgentCore Memory that this is a new conversation session.
+# Short-term memory (within a session) is scoped to this ID.
+# Long-term memory (preferences, semantic facts) persists across session IDs,
+# keyed by ACTOR_ID instead — that's what enables cross-session personalization.
+
+# ---------------------------------------------------------------------------
+# Memory Configuration
+# ---------------------------------------------------------------------------
+# LEARNING NOTE: AgentCoreMemoryConfig wires the agent to the Bedrock AgentCore
+# Memory store created by create_memories.py. Key concepts:
+#
+#   memory_id   → identifies WHICH memory store to use (fetched from SSM)
+#   session_id  → identifies the current conversation session (new each run)
+#   actor_id    → identifies the customer (used to namespace their memories)
+#
+#   retrieval_config → controls HOW memories are retrieved per namespace:
+#     - top_k: max number of memory chunks to retrieve per query
+#     - relevance_score: minimum similarity threshold (0.0-1.0)
+#       Lower = more results but potentially less relevant
+#       0.2 is intentionally permissive here to maximize recall
+#
+#   Namespaces separate different types of memories:
+#     - semantic/    → factual info extracted from conversations (e.g., "has MacBook Pro")
+#     - preferences/ → inferred preferences (e.g., "prefers ThinkPad, budget $1200")
+# ---------------------------------------------------------------------------
+memory_config = AgentCoreMemoryConfig(
+        memory_id=memory_id,
+        session_id=str(session_id),
+        actor_id=ACTOR_ID,
+        retrieval_config={
+            "support/customer/{actorId}/semantic/": RetrievalConfig(top_k=3, relevance_score=0.2),
+            "support/customer/{actorId}/preferences/": RetrievalConfig(top_k=3, relevance_score=0.2)
+        }
+    )
+
 # ---------------------------------------------------------------------------
 # Model Initialization
 # ---------------------------------------------------------------------------
@@ -353,11 +422,20 @@ model = BedrockModel(
 #   - Conversation memory (maintains context across turns in a session)
 #   - Tool registration (makes tools available to the LLM via JSON schema)
 #
+# LAB 2 CHANGE: session_manager is now passed in.
+#   AgentCoreMemorySessionManager hooks into the Strands agent lifecycle:
+#     - BEFORE each turn: retrieves relevant memories for this customer and
+#       injects them into the LLM context automatically
+#     - AFTER each turn: saves the new interaction to the memory store
+#   This is the "memory hook" pattern — you don't call memory APIs manually,
+#   the session manager handles it transparently behind the scenes.
+#
 # The order of tools in the list doesn't affect behavior — the LLM picks
 # the right tool based on the docstrings and system prompt guidance.
 # ---------------------------------------------------------------------------
 agent = Agent(
     model=model,
+    session_manager=AgentCoreMemorySessionManager(memory_config, region),
     tools=[
         get_product_info,       # Tool 1: Mock product specs lookup
         get_return_policy,      # Tool 2: Mock return policy lookup
@@ -373,17 +451,24 @@ print("✅ Customer Support Agent created successfully!")
 # ---------------------------------------------------------------------------
 # Test Queries
 # ---------------------------------------------------------------------------
-# LEARNING NOTE: These are simple end-to-end tests to verify the agent
-# is wired up correctly. In production, you'd replace this with an API
-# endpoint (e.g., FastAPI or Lambda) that accepts user messages and
-# returns agent responses.
+# LEARNING NOTE: These two queries specifically test memory recall, not just
+# tool usage. They only work correctly if create_memories.py was run first
+# to seed the customer's interaction history.
 #
-# Notice the agent maintains conversation context across calls within
-# the same session — it "remembers" the iPhone was mentioned in query 1
-# when answering query 2.
+# Query 1 — tests preference-based personalization:
+#   The agent should recall from seeded history that this customer is into
+#   competitive FPS gaming and needs low latency, and tailor the recommendation.
+#
+# Query 2 — tests semantic memory recall:
+#   The agent should recall the customer's stated preference for ThinkPad,
+#   16GB RAM minimum, Linux compatibility, and $1200 budget — without the
+#   customer repeating any of that in this session.
+#
+# If memory is working correctly, responses will be personalized.
+# If memory isn't working, responses will be generic — useful for debugging.
 # ---------------------------------------------------------------------------
-response = agent("What's the return policy for my thinkpad X1 Carbon?")
+print("🎧 Testing headphone recommendation with customer memory...\n\n")
+response1 = agent("Which headphones would you recommend?")
 
-response = agent(
-    "I bought an iphone 14 last month. I don't like it because it heats up. How do I solve it?"
-)
+print("\n💻 Testing laptop preference recall...\n\n")
+response2 = agent("What is my preferred laptop brand and requirements?")
