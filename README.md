@@ -36,10 +36,6 @@ production-oriented Python scripts.
 
 ---
 
-*More labs coming soon...*
-
----
-
 ## Lab 2 — Persistent Memory with AgentCore Memory
 
 ### What Was Built
