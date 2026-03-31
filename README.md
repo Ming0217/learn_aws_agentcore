@@ -63,3 +63,71 @@ production-oriented Python scripts.
 - The `AgentCoreMemorySessionManager` is a "hook" — it intercepts the agent's turn lifecycle to inject retrieved memories before the LLM responds, and persist new interactions after. You don't call memory APIs manually.
 - Two memory strategy types serve different purposes: `UserPreference` captures inferred behavioral patterns, `Semantic` captures factual statements. Both are retrieved and injected as context automatically.
 - `relevance_score=0.2` is intentionally permissive — for customer support, it's better to over-retrieve and let the LLM filter than to miss relevant context with a high 
+threshold.
+- Namespacing memories by `{actorId}` is critical for multi-tenant systems — it ensures one customer's memories are never mixed with another's.
+- The `create_memories.py` → SSM → `main.py` pattern is the right way to share resource IDs between scripts. It's the same pattern used for the Knowledge Base ID in Lab 1.
+
+---
+
+## Lab 3 — AgentCore Gateway & Secure Tool Sharing
+
+### Original AWS Workshop Objectives
+- Centralize reusable tools with AgentCore Gateway
+- Add secure authentication with AgentCore Identity (Cognito JWT)
+- Expose Lambda functions as MCP-compatible tools
+- Connect the agent to shared tools via MCPClient
+
+### What We Built
+
+**`prerequisite/lambda/` — Lambda Function Code (tool backends)**
+- `lambda_function.py`: router that dispatches tool calls based on the tool name extracted from Gateway context
+- `check_warranty.py`: queries DynamoDB for warranty status by serial number
+- `web_search.py`: same DuckDuckGo search from Lab 1, now running in Lambda
+- `api_spec.json`: tool schemas that tell the Gateway (and LLM) what tools exist and what parameters they accept
+
+**`deploy_infrastructure.py` — One-Time Infrastructure Deployment**
+- Packages Lambda code + DDGS layer, uploads to S3
+- Deploys the CloudFormation stack that creates DynamoDB tables, Lambda, IAM roles, S3 buckets, Knowledge Base, and SSM parameters
+- Fully automated — one command provisions everything
+
+**`setup_gateway.py` — Gateway Setup**
+- Creates Cognito User Pool for JWT authentication
+- Creates AgentCore Gateway with MCP protocol and JWT auth
+- Adds Lambda as a Gateway target with tool schemas from `api_spec.json`
+
+**`lab_helpers/lab1_strands_agent.py` — Extracted Local Tools**
+- Moved `get_product_info`, `get_return_policy`, `get_technical_support`, and `SYSTEM_PROMPT` out of `main.py` into a shared module
+- Both Lab 2 and Lab 3 can import the same tools without duplication
+
+**`main.py` — Agent Runtime (updated)**
+- Replaced local `web_search` with MCPClient connection to AgentCore Gateway
+- Agent now uses a mix of 3 local tools + 2 remote MCP tools (web_search, check_warranty_status)
+- `create_agent()` wrapper opens MCP connection, combines local + remote tools, runs the prompt
+- JWT token from Cognito is passed in HTTP headers on every Gateway request
+
+**`teardown.py` — Complete Cleanup**
+- Deletes Gateway targets + Gateway, Memory store, Cognito resources, SSM parameters
+- Deletes CloudFormation stack (handles DynamoDB, Lambda, IAM, S3, KB)
+- Deletes staging S3 bucket
+- One command to remove everything — no leftover resources or surprise bills
+
+### Key Takeaways
+
+- AgentCore Gateway translates between MCP (what agents speak) and Lambda Invoke (what AWS speaks). The agent never calls Lambda directly.
+- The Gateway handles three things the agent shouldn't: protocol translation, JWT authentication, and tool routing to the right backend.
+- Tool schemas in `api_spec.json` serve the same purpose as `@tool` docstrings — they tell the LLM what tools exist and how to call them. The difference is they're defined explicitly (JSON) instead of auto-generated from Python type hints.
+- Local tools and MCP tools are concatenated into a single list. The LLM doesn't know or care which tools are local vs remote — Strands handles both transparently.
+- The `with mcp_client:` context manager ensures the HTTP connection to the Gateway is properly opened and closed per agent invocation.
+- CloudFormation makes cleanup trivial — `delete-stack` removes all resources it created in the right dependency order. Resources created outside the stack (Gateway, Memory, Cognito) need separate cleanup, which `teardown.py` handles.
+
+### Setup Order
+```bash
+python deploy_infrastructure.py   # 1. CloudFormation stack (5-10 min)
+python setup_gateway.py            # 2. Gateway + Lambda target
+python create_memories.py          # 3. Memory store + seed data
+python main.py                     # 4. Run the agent
+```
+
+---
+
+*More labs coming soon...*
