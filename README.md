@@ -7,6 +7,74 @@ production-oriented Python scripts.
 
 ---
 
+## Prerequisites
+
+### Local Environment
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) — Python package manager (used instead of pip)
+- AWS CLI v2 configured with valid credentials (`aws configure`)
+- Git
+
+### AWS Account Access
+- An AWS account with permissions to create: IAM roles, DynamoDB tables, Lambda functions, S3 buckets, SSM parameters, Bedrock Knowledge Bases, AgentCore resources (Gateway, Memory, Runtime), Cognito User Pools, Secrets Manager secrets
+- Amazon Bedrock model access enabled for:
+  - `anthropic.claude-haiku-4-5-20251001-v1:0` (or your chosen model)
+  - `amazon.titan-embed-text-v2:0` (used by the Knowledge Base for embeddings)
+
+### Python Dependencies (managed by uv)
+Defined in `pyproject.toml`, installed via `uv sync`:
+- `strands-agents` — Strands Agents framework (agentic loop, tool management)
+- `strands-agents-tools` — built-in tools for Strands (includes `retrieve` for KB)
+- `boto3` / `botocore` — AWS SDK for Python
+- `bedrock-agentcore` — AgentCore client library (Memory, Gateway integration)
+- `bedrock-agentcore-starter-toolkit` — helper utilities for AgentCore operations
+- `aws-opentelemetry-distro` — OpenTelemetry for observability (Lab 4)
+- `ddgs` — DuckDuckGo search (used by web_search tool)
+- `pyyaml` — YAML parsing (used by config utilities)
+
+### AWS Infrastructure (provisioned by CloudFormation)
+The workshop's `CustomerSupportStackInfra` CloudFormation stack (or our `deploy_infrastructure.py`) creates:
+- 2 DynamoDB tables — `WarrantyTable` (serial_number → warranty info) and `CustomerProfileTable` (customer_id → profile)
+- 1 Lambda function — `CustomerSupportLambda` with `check_warranty_status` and `web_search` handlers
+- 1 Lambda layer — DDGS package for DuckDuckGo search in Lambda
+- 1 S3 bucket — `{account}-{region}-kb-data-bucket` for Knowledge Base documents
+- 1 Bedrock Knowledge Base — indexes technical support docs from S3 using Titan embeddings + S3 Vectors
+- 6 IAM roles — for Gateway, Runtime, Lambda execution, Bedrock service, data seeding, and KB setup
+- 5+ SSM parameters — storing table names, Lambda ARN, IAM role ARNs, KB/DS IDs
+
+### Resources Created by Setup Scripts (outside CloudFormation)
+These are created by running the setup scripts and must be cleaned up separately via `teardown.py`:
+- AgentCore Gateway — MCP server with Cognito JWT auth (`setup_gateway.py`)
+- AgentCore Memory store — persistent customer memory with UserPreference + Semantic strategies (`create_memories.py`)
+- Cognito User Pool + App Client — issues JWT tokens for Gateway auth (`get_or_create_cognito_pool()`)
+- Secrets Manager secret — stores Cognito config (pool_id, client_id, client_secret)
+- Additional SSM parameters — gateway_id, gateway_url, memory_id, cognito config
+
+### Quick Start
+```bash
+# 1. Clone and install dependencies
+git clone <your-repo-url>
+cd learn_aws_agentcore
+uv sync
+
+# 2. Provision AWS infrastructure (skip if using workshop-provided stack)
+python deploy_infrastructure.py
+
+# 3. Set up AgentCore Gateway
+python setup_gateway.py
+
+# 4. Set up AgentCore Memory and seed customer history
+python create_memories.py
+
+# 5. Run the agent
+python main.py
+
+# 6. Clean up everything when done
+python teardown.py
+```
+
+---
+
 ## Lab 1 — Building a Strands Agent with Tools
 
 ### What Was Built
