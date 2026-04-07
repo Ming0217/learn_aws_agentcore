@@ -1,0 +1,18 @@
+# requirements.txt - Python dependencies for the AgentCore Runtime container
+#
+# LEARNING NOTE: This file is used by the AgentCore Starter Toolkit to build
+# the Docker image for the Runtime deployment. It's separate from pyproject.toml
+# because the container only needs the runtime dependencies, not dev tools.
+# The toolkit reads this file during `agentcore_runtime.configure()` and
+# installs these packages into the container image.
+
+strands-agents>=1.24.0
+strands-agents-tools
+boto3>=1.42.3
+botocore>=1.42.3
+bedrock-agentcore==1.1.1
+bedrock-agentcore-starter-toolkit==0.2.3
+aws-opentelemetry-distro==0.14.0
+ddgs
+pyyaml
+mcp

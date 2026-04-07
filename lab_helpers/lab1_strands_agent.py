@@ -22,6 +22,10 @@ from strands_tools import retrieve
 boto_session = Session()
 region = boto_session.region_name
 
+# Model ID used by both local agent (main.py) and runtime agent (lab4_runtime.py).
+# Centralised here so changing the model only requires one edit.
+MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
 
 @tool
 def get_return_policy(product_category: str) -> str:

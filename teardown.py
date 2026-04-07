@@ -252,6 +252,30 @@ def cleanup_staging_bucket():
 
 
 # ---------------------------------------------------------------------------
+# Step 7: Delete AgentCore Runtime + ECR repository (Lab 4)
+# ---------------------------------------------------------------------------
+def cleanup_runtime():
+    """Delete the AgentCore Runtime and its ECR container repository.
+
+    LEARNING NOTE: The Runtime and ECR repo are created outside CloudFormation
+    by deploy_runtime.py, so they must be deleted manually here.
+    The ECR repo contains the Docker image — deleting it with force=True
+    removes all image versions inside it.
+    """
+    print("🗑️  Cleaning up AgentCore Runtime...")
+    from lab_helpers.utils import runtime_resource_cleanup
+    try:
+        runtime_arn = get_ssm_safe("/app/customersupport/agentcore/runtime_arn")
+        if runtime_arn:
+            runtime_resource_cleanup(runtime_arn)
+            print("   ✅ Runtime and ECR repository deleted")
+        else:
+            print("   No runtime found, skipping.")
+    except Exception as e:
+        print(f"   ⚠️  Runtime cleanup error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -274,6 +298,8 @@ if __name__ == "__main__":
     cleanup_cognito()
     print()
     cleanup_ssm_parameters()
+    print()
+    cleanup_runtime()
     print()
     cleanup_cloudformation()
     print()
