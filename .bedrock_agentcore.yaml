@@ -30,7 +30,7 @@ agents:
     bedrock_agentcore:
       agent_id: customer_support_agent-KTH0C25xt9
       agent_arn: arn:aws:bedrock-agentcore:us-east-1:678602035067:runtime/customer_support_agent-KTH0C25xt9
-      agent_session_id: c40feba3-7e73-4850-89dd-730c49ba8e06
+      agent_session_id: c023920f-8e86-4b06-93ea-26e897b07bdf
     codebuild:
       project_name: null
       execution_role: null
