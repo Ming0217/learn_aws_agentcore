@@ -312,4 +312,101 @@ python invoke_runtime.py           # 5. Test the deployed agent
 
 ---
 
+## Lab 5 — Online Evaluation with AgentCore Evaluations
+
+### Original AWS Workshop Objectives
+- Configure online evaluation to automatically assess agent performance in real-time
+- Use built-in evaluators for goal success, correctness, and tool selection accuracy
+- Generate test interactions and analyze quality metrics through CloudWatch dashboards
+
+### How Online Evaluation Works
+
+**What exactly are we evaluating?**
+
+We're evaluating the quality of the agent's responses to customer interactions. Think of it as having a supervisor review every conversation and grading it:
+
+```
+Customer: "My laptop won't start up. Can you help?"
+Agent:    [calls get_technical_support] → "Try these steps: 1. Check power cable..."
+
+Evaluator 1 — GoalSuccessRate:
+  "Did the agent actually help the customer with their problem?"
+  → Score: 0.9 (yes, provided actionable troubleshooting steps)
+
+Evaluator 2 — Correctness:
+  "Is the troubleshooting advice factually accurate?"
+  → Score: 0.85 (steps are correct, sourced from KB)
+
+Evaluator 3 — ToolSelectionAccuracy:
+  "Did the agent pick the right tool? (get_technical_support vs get_product_info)"
+  → Score: 1.0 (correct — used get_technical_support for a troubleshooting question)
+```
+
+Without evaluation, the agent might hallucinate a return policy that doesn't exist (low Correctness), use `web_search` when it should use `get_technical_support` (low ToolSelectionAccuracy), or give a technically correct answer that doesn't solve the customer's problem (low GoalSuccessRate). Online evaluation catches these issues automatically before customers complain.
+
+**How are the test cases generated?**
+
+In this lab, the test cases in `run_eval_tests.py` are manually written prompts that cover different tool types. But these exist only to generate traffic for the demo — in production, you wouldn't need them. The online evaluation evaluates real customer conversations automatically:
+
+```
+Lab demo:     run_eval_tests.py → simulated traffic → evaluators score it
+Production:   real customers    → real traffic       → evaluators score it automatically
+```
+
+Once the agent is live with real users, `run_eval_tests.py` becomes unnecessary. The evaluators just run on real conversations.
+
+**Evaluation flow:**
+
+```
+Customer interacts with agent
+         │
+         ↓
+AgentCore Runtime ──→ processes request ──→ returns response
+         │
+         │  (traces are captured automatically via OpenTelemetry)
+         ↓
+AgentCore Observability
+         │
+         │  (sampling: 100% for demo, 10-20% in production)
+         ↓
+Evaluators (LLM-based judges)
+  ├── GoalSuccessRate:      Did the agent solve the customer's problem?
+  ├── Correctness:          Is the information factually accurate?
+  └── ToolSelectionAccuracy: Did the agent pick the right tool?
+         │
+         ↓
+CloudWatch GenAI Observability Dashboard
+  (scores, trends, low-scoring session investigation)
+```
+
+### What We Built
+
+**`setup_evals.py` — Configure Online Evaluation**
+- Retrieves the agent ARN from SSM (deployed in Lab 4)
+- Creates an online evaluation config with 3 built-in evaluators at 100% sampling rate
+- Evaluators are LLM-based — they use a model to judge the agent's responses asynchronously (no impact on response latency)
+
+**`run_eval_tests.py` — Generate Test Interactions**
+- Runs 5 diverse test scenarios against the production agent
+- Each scenario exercises different tools and evaluator dimensions
+- Results flow to CloudWatch for analysis
+
+### Key Takeaways
+
+- Online evaluation runs automatically on live traffic — no manual triggering needed. Once configured, every sampled session is scored.
+- Evaluators are LLM-based judges that analyze completed session traces after the fact. They don't slow down the agent's response to the customer.
+- The 3 built-in evaluators cover the most important quality dimensions: did the agent help (GoalSuccessRate), was it accurate (Correctness), and did it use the right tools (ToolSelectionAccuracy).
+- Sampling rate controls cost vs coverage. 100% is great for demos but expensive in production. 10-20% gives good signal without evaluating every single session.
+- Results appear in CloudWatch → GenAI Observability → Bedrock AgentCore. Look for per-session scores and aggregate trends over time.
+- Low scores are actionable: low GoalSuccessRate → improve system prompt; low Correctness → update Knowledge Base; low ToolSelectionAccuracy → refine tool descriptions.
+
+### Setup Order
+```bash
+python setup_evals.py       # 1. Configure online evaluation
+python run_eval_tests.py    # 2. Generate test interactions
+# Then check CloudWatch → GenAI Observability → Bedrock AgentCore
+```
+
+---
+
 *More labs coming soon...*
